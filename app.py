@@ -151,5 +151,25 @@ class TFLiteProcessor(VideoProcessorBase):
 
         return av.VideoFrame.from_ndarray(img, format="bgr24")
 
-rtc_configuration = RTCConfiguration({"iceServers": [{"urls": ["stun:stun.l.google.com:19302"]}]})
-webrtc_streamer(key="isl-final", video_processor_factory=TFLiteProcessor, rtc_configuration=rtc_configuration, media_stream_constraints={"video": True, "audio": False})
+# --- 5. WEBRTC STREAMER (ROBUST CONFIG) ---
+# We use a list of free, reliable STUN servers to punch through firewalls
+rtc_configuration = RTCConfiguration(
+    {"iceServers": [
+        {"urls": ["stun:stun.l.google.com:19302"]},
+        {"urls": ["stun:stun1.l.google.com:19302"]},
+        {"urls": ["stun:stun2.l.google.com:19302"]},
+        {"urls": ["stun:stun3.l.google.com:19302"]},
+        {"urls": ["stun:stun4.l.google.com:19302"]},
+    ]}
+)
+
+webrtc_streamer(
+    key="isl-live",
+    video_processor_factory=TFLiteProcessor,
+    rtc_configuration=rtc_configuration,
+    media_stream_constraints={
+        "video": {"width": 640, "height": 480}, # Lower resolution helps stability on Cloud
+        "audio": False
+    },
+    async_processing=True,
+)
