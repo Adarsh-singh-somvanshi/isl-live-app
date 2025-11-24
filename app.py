@@ -8,7 +8,7 @@ import threading
 from collections import deque
 from streamlit_webrtc import webrtc_streamer, RTCConfiguration, VideoProcessorBase
 
-# --- 1. ROBUST IMPORT SECTION ---
+# --- 1. ROBUST IMPORT ---
 import tensorflow as tf
 try:
     Interpreter = tf.lite.Interpreter
@@ -23,38 +23,32 @@ except AttributeError:
 st.set_page_config(page_title="ISL Detector", page_icon="🖐️", layout="wide")
 st.title("🖐️ ISL Gesture Recognition")
 
-# --- 3. CONSTANTS & RESOURCES ---
+# --- 3. RESOURCES ---
 SEQUENCE_LENGTH = 32
 FEATURE_SIZE = 138
 
 @st.cache_resource
 def load_resources():
-    # Re-declare for safety inside cache
     try:
-        Interpreter_Local = tf.lite.Interpreter
-    except:
-        from tensorflow.lite.python.interpreter import Interpreter as Interpreter_Local
-
-    # Load Labels
-    try:
+        # Load Labels
         with open("label_map.pkl", "rb") as f:
             label_to_idx = pickle.load(f)
             idx_to_label = {v: k for k, v in label_to_idx.items()}
-    except Exception as e:
-        st.error(f"Error loading labels: {e}")
-        return None, None
-
-    # Load Model
-    try:
+        
+        # Load Model
+        try:
+            Interpreter_Local = tf.lite.Interpreter
+        except:
+            from tensorflow.lite.python.interpreter import Interpreter as Interpreter_Local
+            
         interpreter = Interpreter_Local(model_path="isl_gesture_model.tflite")
         interpreter.allocate_tensors()
         input_details = interpreter.get_input_details()
         output_details = interpreter.get_output_details()
+        return idx_to_label, (interpreter, input_details, output_details)
     except Exception as e:
-        st.error(f"Error loading TFLite model: {e}")
+        st.error(f"Error loading resources: {e}")
         return None, None
-        
-    return idx_to_label, (interpreter, input_details, output_details)
 
 resources = load_resources()
 
@@ -66,11 +60,12 @@ class TFLiteProcessor(VideoProcessorBase):
         self.last_confidence = 0.0
         self.lock = threading.Lock()
         
+        # Initialize MediaPipe (Standard Complexity to avoid download error)
         self.mp_holistic = mp.solutions.holistic
         self.mp_drawing = mp.solutions.drawing_utils
         self.holistic = self.mp_holistic.Holistic(
             static_image_mode=False,
-            model_complexity=1, # Low complexity = Faster on Cloud
+            model_complexity=1, 
             min_detection_confidence=0.5,
             min_tracking_confidence=0.5
         )
@@ -119,19 +114,15 @@ class TFLiteProcessor(VideoProcessorBase):
         
         results = self.holistic.process(img_rgb)
 
-        # Draw Hiding Face
+        # Visuals
         if results.face_landmarks:
-             self.mp_drawing.draw_landmarks(
-                img, results.face_landmarks, self.mp_holistic.FACEMESH_TESSELATION,
-                landmark_drawing_spec=None,
-                connection_drawing_spec=self.mp_drawing.DrawingSpec(color=(80, 110, 10), thickness=1, circle_radius=1)
-            )
-
-        # Draw Hands
+            self.mp_drawing.draw_landmarks(img, results.face_landmarks, self.mp_holistic.FACEMESH_TESSELATION, landmark_drawing_spec=None, connection_drawing_spec=self.mp_drawing.DrawingSpec(color=(80, 110, 10), thickness=1, circle_radius=1))
+        
         for hand_landmarks in [results.left_hand_landmarks, results.right_hand_landmarks]:
             if hand_landmarks:
                 self.mp_drawing.draw_landmarks(img, hand_landmarks, self.mp_holistic.HAND_CONNECTIONS)
 
+        # Prediction
         features = self.extract_features(results)
         self.buffer.append(features)
 
@@ -151,10 +142,16 @@ class TFLiteProcessor(VideoProcessorBase):
 
         return av.VideoFrame.from_ndarray(img, format="bgr24")
 
-# --- 5. WEBRTC STREAMER ---
-# Use Google STUN server (Most reliable free option)
+# --- 5. WEBRTC STREAMER (AGGRESSIVE CONFIG) ---
+# Trying multiple STUN servers increases success rate
 rtc_configuration = RTCConfiguration(
-    {"iceServers": [{"urls": ["stun:stun.l.google.com:19302"]}]}
+    {"iceServers": [
+        {"urls": ["stun:stun.l.google.com:19302"]},
+        {"urls": ["stun:stun1.l.google.com:19302"]},
+        {"urls": ["stun:stun2.l.google.com:19302"]},
+        {"urls": ["stun:stun.services.mozilla.com"]},
+        {"urls": ["stun:stun.voiparound.com"]},
+    ]}
 )
 
 webrtc_streamer(
@@ -162,7 +159,7 @@ webrtc_streamer(
     video_processor_factory=TFLiteProcessor,
     rtc_configuration=rtc_configuration,
     media_stream_constraints={
-        "video": {"width": 480, "height": 480}, 
+        "video": {"width": 480, "height": 480}, # Low bandwidth
         "audio": False
     },
     async_processing=True,
