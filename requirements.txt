@@ -6,3 +6,4 @@ mediapipe
 protobuf==3.20.3
 numpy<2
 av
+aiortc==1.3.2
