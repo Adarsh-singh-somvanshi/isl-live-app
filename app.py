@@ -8,7 +8,7 @@ import threading
 from collections import deque
 from streamlit_webrtc import webrtc_streamer, RTCConfiguration, VideoProcessorBase
 
-# --- 1. ROBUST IMPORT ---
+# --- 1. ROBUST IMPORTS ---
 import tensorflow as tf
 try:
     Interpreter = tf.lite.Interpreter
@@ -30,18 +30,17 @@ FEATURE_SIZE = 138
 @st.cache_resource
 def load_resources():
     try:
-        # Load Labels
+        # Re-declare Interpreter locally to avoid pickling issues
+        try:
+            LocalInterpreter = tf.lite.Interpreter
+        except:
+            from tensorflow.lite.python.interpreter import Interpreter as LocalInterpreter
+
         with open("label_map.pkl", "rb") as f:
             label_to_idx = pickle.load(f)
             idx_to_label = {v: k for k, v in label_to_idx.items()}
         
-        # Load Model
-        try:
-            Interpreter_Local = tf.lite.Interpreter
-        except:
-            from tensorflow.lite.python.interpreter import Interpreter as Interpreter_Local
-            
-        interpreter = Interpreter_Local(model_path="isl_gesture_model.tflite")
+        interpreter = LocalInterpreter(model_path="isl_gesture_model.tflite")
         interpreter.allocate_tensors()
         input_details = interpreter.get_input_details()
         output_details = interpreter.get_output_details()
@@ -60,7 +59,7 @@ class TFLiteProcessor(VideoProcessorBase):
         self.last_confidence = 0.0
         self.lock = threading.Lock()
         
-        # Initialize MediaPipe (Standard Complexity to avoid download error)
+        # FIX: Use model_complexity=1 to avoid "Permission Denied" download error
         self.mp_holistic = mp.solutions.holistic
         self.mp_drawing = mp.solutions.drawing_utils
         self.holistic = self.mp_holistic.Holistic(
@@ -72,7 +71,6 @@ class TFLiteProcessor(VideoProcessorBase):
 
     def extract_features(self, results):
         vec = []
-        # Pose
         if results.pose_landmarks:
             for idx in [11, 12]:
                 lm = results.pose_landmarks.landmark[idx]
@@ -80,7 +78,6 @@ class TFLiteProcessor(VideoProcessorBase):
         else:
             vec.extend([0.0]*3*2)
 
-        # Hands
         for hand in [results.left_hand_landmarks, results.right_hand_landmarks]:
             if hand:
                 for lm in hand.landmark:
@@ -88,7 +85,6 @@ class TFLiteProcessor(VideoProcessorBase):
             else:
                 vec.extend([0.0]*3*21)
 
-        # Palms
         if results.left_hand_landmarks:
             lm = results.left_hand_landmarks.landmark[0]
             vec.extend([lm.x, lm.y, lm.z])
@@ -114,7 +110,7 @@ class TFLiteProcessor(VideoProcessorBase):
         
         results = self.holistic.process(img_rgb)
 
-        # Visuals
+        # Draw Visuals
         if results.face_landmarks:
             self.mp_drawing.draw_landmarks(img, results.face_landmarks, self.mp_holistic.FACEMESH_TESSELATION, landmark_drawing_spec=None, connection_drawing_spec=self.mp_drawing.DrawingSpec(color=(80, 110, 10), thickness=1, circle_radius=1))
         
@@ -142,15 +138,14 @@ class TFLiteProcessor(VideoProcessorBase):
 
         return av.VideoFrame.from_ndarray(img, format="bgr24")
 
-# --- 5. WEBRTC STREAMER (AGGRESSIVE CONFIG) ---
-# Trying multiple STUN servers increases success rate
+# --- 5. WEBRTC STREAMER (AGGRESSIVE STUN) ---
+# Multiple STUN servers to punch through firewalls
 rtc_configuration = RTCConfiguration(
     {"iceServers": [
         {"urls": ["stun:stun.l.google.com:19302"]},
         {"urls": ["stun:stun1.l.google.com:19302"]},
         {"urls": ["stun:stun2.l.google.com:19302"]},
         {"urls": ["stun:stun.services.mozilla.com"]},
-        {"urls": ["stun:stun.voiparound.com"]},
     ]}
 )
 
@@ -159,7 +154,7 @@ webrtc_streamer(
     video_processor_factory=TFLiteProcessor,
     rtc_configuration=rtc_configuration,
     media_stream_constraints={
-        "video": {"width": 480, "height": 480}, # Low bandwidth
+        "video": {"width": 480, "height": 480}, # Keep low res for stability
         "audio": False
     },
     async_processing=True,
