@@ -1,2 +1,7 @@
 libgl1
 libglib2.0-0
+libavdevice-dev
+libavfilter-dev
+libopus-dev
+libvpx-dev
+pkg-config
