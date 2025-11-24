@@ -8,3 +8,4 @@ mediapipe
 av
 jax==0.4.13
 jaxlib==0.4.13
+aiortc==1.6.0
