@@ -5,44 +5,45 @@ import av
 import mediapipe as mp
 import pickle
 import threading
+import asyncio
 from collections import deque
 from streamlit_webrtc import webrtc_streamer, RTCConfiguration, VideoProcessorBase
 
-# --- 1. ROBUST IMPORT SECTION ---
-Interpreter = None # Initialize to prevent "NameError" crash
+# --- 1. MONKEY PATCH (Fixes the asyncio crash) ---
+# This suppresses the "NoneType object has no attribute call_exception_handler" error
+original_del = asyncio.Future.__del__
 
-try:
-    # Attempt 1: Standard Import
-    import tensorflow as tf
+def new_del(self):
     try:
-        Interpreter = tf.lite.Interpreter
-    except AttributeError:
-        # Attempt 2: Explicit Submodule Import (Fixes Windows Lazy Loading)
+        original_del(self)
+    except (AttributeError, TypeError):
+        pass # Ignore the specific crash on teardown
+
+asyncio.Future.__del__ = new_del
+# ------------------------------------------------
+
+# --- 2. ROBUST IMPORT SECTION ---
+import tensorflow as tf
+try:
+    Interpreter = tf.lite.Interpreter
+except AttributeError:
+    try:
         import tensorflow.lite as tflite
         Interpreter = tflite.Interpreter
-except (ImportError, AttributeError):
-    try:
-        # Attempt 3: Direct Internal Import (Last Resort)
-        from tensorflow.lite.python.interpreter import Interpreter
     except ImportError:
-        pass # We handle Interpreter=None later
+        from tensorflow.lite.python.interpreter import Interpreter
 
-# --- 2. PAGE CONFIG ---
+# --- 3. PAGE CONFIG ---
 st.set_page_config(page_title="ISL Detector", page_icon="🖐️", layout="wide")
 st.title("🖐️ ISL Gesture Recognition")
 
-# --- 3. CONSTANTS & RESOURCES ---
+# --- 4. CONSTANTS & RESOURCES ---
 SEQUENCE_LENGTH = 32
 FEATURE_SIZE = 138
 
 @st.cache_resource
 def load_resources():
-    # Check if Library loaded
-    if Interpreter is None:
-        st.error("CRITICAL ERROR: TensorFlow Lite library could not be loaded.")
-        return None, None
-
-    # Load Labels
+    Interpreter = tf.lite.Interpreter # Re-declare for safety
     try:
         with open("label_map.pkl", "rb") as f:
             label_to_idx = pickle.load(f)
@@ -51,7 +52,6 @@ def load_resources():
         st.error(f"Error loading labels: {e}")
         return None, None
 
-    # Load TFLite Model
     try:
         interpreter = Interpreter(model_path="isl_gesture_model.tflite")
         interpreter.allocate_tensors()
@@ -65,11 +65,11 @@ def load_resources():
 
 resources = load_resources()
 
-# --- 4. VIDEO PROCESSOR ---
+# --- 5. VIDEO PROCESSOR ---
 class TFLiteProcessor(VideoProcessorBase):
     def __init__(self):
         self.buffer = deque(maxlen=SEQUENCE_LENGTH)
-        self.last_pred_text = "Initializing..."
+        self.last_pred_text = "Waiting..."
         self.last_confidence = 0.0
         self.lock = threading.Lock()
         
@@ -77,10 +77,9 @@ class TFLiteProcessor(VideoProcessorBase):
         self.mp_drawing = mp.solutions.drawing_utils
         self.holistic = self.mp_holistic.Holistic(
             static_image_mode=False,
-            model_complexity=1,
+            model_complexity=0, # Lower complexity = faster
             min_detection_confidence=0.5,
-            min_tracking_confidence=0.5,
-            refine_face_landmarks=False
+            min_tracking_confidence=0.5
         )
 
     def extract_features(self, results):
@@ -114,8 +113,6 @@ class TFLiteProcessor(VideoProcessorBase):
 
     def recv(self, frame):
         idx_to_label, tflite_data = resources
-        
-        # Safe exit if model didn't load
         if idx_to_label is None or tflite_data is None:
             return frame.to_ndarray(format="bgr24")
 
@@ -126,9 +123,9 @@ class TFLiteProcessor(VideoProcessorBase):
         
         results = self.holistic.process(img_rgb)
 
+        # Draw visuals
         if results.face_landmarks:
             self.mp_drawing.draw_landmarks(img, results.face_landmarks, self.mp_holistic.FACEMESH_TESSELATION, landmark_drawing_spec=None, connection_drawing_spec=self.mp_drawing.DrawingSpec(color=(80, 110, 10), thickness=1, circle_radius=1))
-        
         for hand_landmarks in [results.left_hand_landmarks, results.right_hand_landmarks]:
             if hand_landmarks:
                 self.mp_drawing.draw_landmarks(img, hand_landmarks, self.mp_holistic.HAND_CONNECTIONS)
@@ -151,9 +148,7 @@ class TFLiteProcessor(VideoProcessorBase):
 
         return av.VideoFrame.from_ndarray(img, format="bgr24")
 
-# --- 5. WEBRTC STREAMER (ROBUST CONFIG) ---
-# We use a list of free, reliable STUN servers to punch through firewalls
-# --- 5. WEBRTC STREAMER ---
+# --- 6. WEBRTC STREAMER (Connection Fix) ---
 rtc_configuration = RTCConfiguration(
     {"iceServers": [{"urls": ["stun:stun.l.google.com:19302"]}]}
 )
@@ -163,7 +158,7 @@ webrtc_streamer(
     video_processor_factory=TFLiteProcessor,
     rtc_configuration=rtc_configuration,
     media_stream_constraints={
-        "video": {"width": 480, "height": 480}, # Keep low res for stability
+        "video": {"width": 480, "height": 480}, # Keeping it stable
         "audio": False
     },
     async_processing=True,
