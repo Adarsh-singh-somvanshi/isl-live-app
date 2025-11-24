@@ -1,9 +1,9 @@
 streamlit
 streamlit-webrtc
-opencv-python-headless
+opencv-python-headless<4.10
 numpy<2
 tensorflow-cpu==2.15.0
 protobuf==3.20.3
 mediapipe
 av
-aiortc<1.8.0
+aiortc==1.5.0
