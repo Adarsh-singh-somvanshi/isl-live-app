@@ -5,24 +5,10 @@ import av
 import mediapipe as mp
 import pickle
 import threading
-import asyncio
 from collections import deque
 from streamlit_webrtc import webrtc_streamer, RTCConfiguration, VideoProcessorBase
 
-# --- 1. MONKEY PATCH (Fixes the asyncio crash) ---
-# This suppresses the "NoneType object has no attribute call_exception_handler" error
-original_del = asyncio.Future.__del__
-
-def new_del(self):
-    try:
-        original_del(self)
-    except (AttributeError, TypeError):
-        pass # Ignore the specific crash on teardown
-
-asyncio.Future.__del__ = new_del
-# ------------------------------------------------
-
-# --- 2. ROBUST IMPORT SECTION ---
+# --- 1. ROBUST IMPORT SECTION ---
 import tensorflow as tf
 try:
     Interpreter = tf.lite.Interpreter
@@ -33,17 +19,23 @@ except AttributeError:
     except ImportError:
         from tensorflow.lite.python.interpreter import Interpreter
 
-# --- 3. PAGE CONFIG ---
+# --- 2. PAGE CONFIG ---
 st.set_page_config(page_title="ISL Detector", page_icon="🖐️", layout="wide")
 st.title("🖐️ ISL Gesture Recognition")
 
-# --- 4. CONSTANTS & RESOURCES ---
+# --- 3. CONSTANTS & RESOURCES ---
 SEQUENCE_LENGTH = 32
 FEATURE_SIZE = 138
 
 @st.cache_resource
 def load_resources():
-    Interpreter = tf.lite.Interpreter # Re-declare for safety
+    # Re-declare for safety inside cache
+    try:
+        Interpreter_Local = tf.lite.Interpreter
+    except:
+        from tensorflow.lite.python.interpreter import Interpreter as Interpreter_Local
+
+    # Load Labels
     try:
         with open("label_map.pkl", "rb") as f:
             label_to_idx = pickle.load(f)
@@ -52,8 +44,9 @@ def load_resources():
         st.error(f"Error loading labels: {e}")
         return None, None
 
+    # Load Model
     try:
-        interpreter = Interpreter(model_path="isl_gesture_model.tflite")
+        interpreter = Interpreter_Local(model_path="isl_gesture_model.tflite")
         interpreter.allocate_tensors()
         input_details = interpreter.get_input_details()
         output_details = interpreter.get_output_details()
@@ -65,7 +58,7 @@ def load_resources():
 
 resources = load_resources()
 
-# --- 5. VIDEO PROCESSOR ---
+# --- 4. VIDEO PROCESSOR ---
 class TFLiteProcessor(VideoProcessorBase):
     def __init__(self):
         self.buffer = deque(maxlen=SEQUENCE_LENGTH)
@@ -77,13 +70,14 @@ class TFLiteProcessor(VideoProcessorBase):
         self.mp_drawing = mp.solutions.drawing_utils
         self.holistic = self.mp_holistic.Holistic(
             static_image_mode=False,
-            model_complexity=0, # Lower complexity = faster
+            model_complexity=0, # Low complexity = Faster on Cloud
             min_detection_confidence=0.5,
             min_tracking_confidence=0.5
         )
 
     def extract_features(self, results):
         vec = []
+        # Pose
         if results.pose_landmarks:
             for idx in [11, 12]:
                 lm = results.pose_landmarks.landmark[idx]
@@ -91,6 +85,7 @@ class TFLiteProcessor(VideoProcessorBase):
         else:
             vec.extend([0.0]*3*2)
 
+        # Hands
         for hand in [results.left_hand_landmarks, results.right_hand_landmarks]:
             if hand:
                 for lm in hand.landmark:
@@ -98,6 +93,7 @@ class TFLiteProcessor(VideoProcessorBase):
             else:
                 vec.extend([0.0]*3*21)
 
+        # Palms
         if results.left_hand_landmarks:
             lm = results.left_hand_landmarks.landmark[0]
             vec.extend([lm.x, lm.y, lm.z])
@@ -123,9 +119,15 @@ class TFLiteProcessor(VideoProcessorBase):
         
         results = self.holistic.process(img_rgb)
 
-        # Draw visuals
+        # Draw Hiding Face
         if results.face_landmarks:
-            self.mp_drawing.draw_landmarks(img, results.face_landmarks, self.mp_holistic.FACEMESH_TESSELATION, landmark_drawing_spec=None, connection_drawing_spec=self.mp_drawing.DrawingSpec(color=(80, 110, 10), thickness=1, circle_radius=1))
+             self.mp_drawing.draw_landmarks(
+                img, results.face_landmarks, self.mp_holistic.FACEMESH_TESSELATION,
+                landmark_drawing_spec=None,
+                connection_drawing_spec=self.mp_drawing.DrawingSpec(color=(80, 110, 10), thickness=1, circle_radius=1)
+            )
+
+        # Draw Hands
         for hand_landmarks in [results.left_hand_landmarks, results.right_hand_landmarks]:
             if hand_landmarks:
                 self.mp_drawing.draw_landmarks(img, hand_landmarks, self.mp_holistic.HAND_CONNECTIONS)
@@ -144,11 +146,13 @@ class TFLiteProcessor(VideoProcessorBase):
                 self.last_confidence = float(output_data[idx]) * 100
 
         cv2.rectangle(img, (0, 0), (640, 60), (0, 0, 0), -1)
-        cv2.putText(img, f"{self.last_pred_text} ({self.last_confidence:.1f}%)", (20, 40), cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 255, 0), 2, cv2.LINE_AA)
+        cv2.putText(img, f"{self.last_pred_text} ({self.last_confidence:.1f}%)", (20, 40), 
+                    cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 255, 0), 2, cv2.LINE_AA)
 
         return av.VideoFrame.from_ndarray(img, format="bgr24")
 
-# --- 6. WEBRTC STREAMER (Connection Fix) ---
+# --- 5. WEBRTC STREAMER ---
+# Use Google STUN server (Most reliable free option)
 rtc_configuration = RTCConfiguration(
     {"iceServers": [{"urls": ["stun:stun.l.google.com:19302"]}]}
 )
@@ -158,7 +162,7 @@ webrtc_streamer(
     video_processor_factory=TFLiteProcessor,
     rtc_configuration=rtc_configuration,
     media_stream_constraints={
-        "video": {"width": 480, "height": 480}, # Keeping it stable
+        "video": {"width": 480, "height": 480}, 
         "audio": False
     },
     async_processing=True,
