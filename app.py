@@ -128,11 +128,13 @@ class TFLiteProcessor(VideoProcessorBase):
 rtc_configuration = RTCConfiguration(
     {
         "iceServers": [
-            {"urls": ["stun:stun.l.google.com:19302"]},   # STUN
+            {"urls": ["stun:stun.l.google.com:19302"]},
             {
-                "urls": ["turn:openrelay.metered.ca:80", 
-                         "turn:openrelay.metered.ca:443", 
-                         "turn:openrelay.metered.ca:443?transport=tcp"],
+                "urls": [
+                    "turn:openrelay.metered.ca:80",
+                    "turn:openrelay.metered.ca:443",
+                    "turn:openrelay.metered.ca:443?transport=tcp"
+                ],
                 "username": "openrelayproject",
                 "credential": "openrelayproject"
             }
@@ -144,6 +146,6 @@ webrtc_streamer(
     key="isl",
     video_processor_factory=TFLiteProcessor,
     rtc_configuration=rtc_configuration,
-    media_stream_constraints={"video": True, "audio": False}
-    async_processing=True
+    media_stream_constraints={"video": True, "audio": False},
+    async_processing=True     # ⭐ REQUIRED to fix NoneType errors
 )
