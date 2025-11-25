@@ -145,4 +145,5 @@ webrtc_streamer(
     video_processor_factory=TFLiteProcessor,
     rtc_configuration=rtc_configuration,
     media_stream_constraints={"video": True, "audio": False}
+    async_processing=True
 )
