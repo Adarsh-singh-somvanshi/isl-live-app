@@ -8,7 +8,7 @@ import threading
 from collections import deque
 from streamlit_webrtc import webrtc_streamer, RTCConfiguration, VideoProcessorBase
 
-# --- 1. ROBUST IMPORTS ---
+# --- 1. IMPORT TENSORFLOW ---
 import tensorflow as tf
 try:
     Interpreter = tf.lite.Interpreter
@@ -30,7 +30,6 @@ FEATURE_SIZE = 138
 @st.cache_resource
 def load_resources():
     try:
-        # Re-declare Interpreter locally to avoid pickling issues
         try:
             LocalInterpreter = tf.lite.Interpreter
         except:
@@ -59,7 +58,7 @@ class TFLiteProcessor(VideoProcessorBase):
         self.last_confidence = 0.0
         self.lock = threading.Lock()
         
-        # FIX: Use model_complexity=1 to avoid "Permission Denied" download error
+        # Standard Complexity (Works because packages.txt is installed)
         self.mp_holistic = mp.solutions.holistic
         self.mp_drawing = mp.solutions.drawing_utils
         self.holistic = self.mp_holistic.Holistic(
@@ -110,7 +109,6 @@ class TFLiteProcessor(VideoProcessorBase):
         
         results = self.holistic.process(img_rgb)
 
-        # Draw Visuals
         if results.face_landmarks:
             self.mp_drawing.draw_landmarks(img, results.face_landmarks, self.mp_holistic.FACEMESH_TESSELATION, landmark_drawing_spec=None, connection_drawing_spec=self.mp_drawing.DrawingSpec(color=(80, 110, 10), thickness=1, circle_radius=1))
         
@@ -118,7 +116,6 @@ class TFLiteProcessor(VideoProcessorBase):
             if hand_landmarks:
                 self.mp_drawing.draw_landmarks(img, hand_landmarks, self.mp_holistic.HAND_CONNECTIONS)
 
-        # Prediction
         features = self.extract_features(results)
         self.buffer.append(features)
 
@@ -138,15 +135,10 @@ class TFLiteProcessor(VideoProcessorBase):
 
         return av.VideoFrame.from_ndarray(img, format="bgr24")
 
-# --- 5. WEBRTC STREAMER (AGGRESSIVE STUN) ---
-# Multiple STUN servers to punch through firewalls
+# --- 5. WEBRTC STREAMER ---
+# Standard Google STUN server (Reliable)
 rtc_configuration = RTCConfiguration(
-    {"iceServers": [
-        {"urls": ["stun:stun.l.google.com:19302"]},
-        {"urls": ["stun:stun1.l.google.com:19302"]},
-        {"urls": ["stun:stun2.l.google.com:19302"]},
-        {"urls": ["stun:stun.services.mozilla.com"]},
-    ]}
+    {"iceServers": [{"urls": ["stun:stun.l.google.com:19302"]}]}
 )
 
 webrtc_streamer(
@@ -154,7 +146,7 @@ webrtc_streamer(
     video_processor_factory=TFLiteProcessor,
     rtc_configuration=rtc_configuration,
     media_stream_constraints={
-        "video": {"width": 480, "height": 480}, # Keep low res for stability
+        "video": {"width": 480, "height": 480},
         "audio": False
     },
     async_processing=True,
